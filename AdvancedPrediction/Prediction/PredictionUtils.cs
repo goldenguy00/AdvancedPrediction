@@ -42,6 +42,10 @@ namespace AdvancedPrediction.Prediction
             if (!AdvPredictionConfig.enablePrediction.Value || !body || !body.master || !projectilePrefab)
                 return aimRay;
 
+            var targetBody = GetAimTargetBody(body);
+            if (!targetBody)
+                return aimRay;
+
             var projectileSpeed = 0f;
             if (projectilePrefab.TryGetComponent<ProjectileSimple>(out var ps))
                 projectileSpeed = ps.desiredForwardSpeed;
@@ -52,8 +56,7 @@ namespace AdvancedPrediction.Prediction
             if (body.teamComponent.teamIndex != TeamIndex.Player)
                 AdvPredictionPlugin.GetProjectileSpeedModifiers(ref projectileSpeed);
 
-            var targetBody = GetAimTargetBody(body);
-            if (projectileSpeed > 0f && targetBody)
+            if (projectileSpeed > 0f)
             {
                 //Velocity shows up as 0 for clients due to not having authority over the CharacterMotor
                 //Less accurate, but it works online.
@@ -129,6 +132,7 @@ namespace AdvancedPrediction.Prediction
             }
             return nextVelocity - velocity;
         }
+
         //All in world space! Gets point you have to aim to
         //NOTE: this will break with infinite speed projectiles!
         //https://gamedev.stackexchange.com/questions/149327/projectile-aim-prediction-with-acceleration
@@ -149,14 +153,13 @@ namespace AdvancedPrediction.Prediction
             var d = 2f * Vector3.Dot(vT, pT);
             var e = pT.sqrMagnitude;
 
-            double[] tValues;
+            float[] tValues;
             if (useAccel)
             {
                 var a = aT.sqrMagnitude * 0.25f;
                 var b = Vector3.Dot(aT, vT);
                 c += Vector3.Dot(aT, pT);
 
-                //solve with newton
                 tValues = SolveQuartic(a, b, c, d, e);
             }
             else
@@ -164,31 +167,32 @@ namespace AdvancedPrediction.Prediction
                 tValues = SolveQuadratic(c, d, e);
             }
 
-            if (tValues != null)
+            if (tValues is not null)
             {
                 var t = float.MaxValue;
-                for (var i = 0; i < tValues.Length; i++ )
+                for (var i = 0; i < tValues.Length; i++)
                 {
-                    var val = (float)tValues[i];
-                    if (val > 0f & val < t)
-                        t = val;
+                    var val = tValues[i];
+                    if (0f < val && val < t)
+                        t = tValues[i];
                 }
 
-                if (t is > 0f and < float.MaxValue)
+                if (t < float.MaxValue)
                 {
                     var pT_final = pT + (vT * t) + (0.5f * aT * t * t);
                     if (Physics.Linecast(pT + aimRay.origin, pT_final + aimRay.origin, out var hitInfo))
                     {
                         pT_final = Vector3.MoveTowards(pT, pT_final, hitInfo.distance) + hitInfo.normal;
                     }
-                    var vP = (pT_final / t) - (0.5f * aP * t);
-                    vP.Normalize();
-                    return new Ray(aimRay.origin, Vector3.Lerp(aimRay.direction, vP, AdvPredictionConfig.accuracy.Value * 0.01f));
+                    //var vP = (pT_final / t) - (0.5f * aP * t);
+                    pT_final /= t;
+                    aimRay.direction = Vector3.Lerp(aimRay.direction, pT_final.normalized, AdvPredictionConfig.accuracy.Value * 0.01f);
                 }
             }
-            return aimRay;
 
+            return aimRay;
         }
+
         /*
          * Solves the equation ax^2+bx+c=0. Solutions are returned in a sorted array
          * if they exist.
@@ -199,24 +203,23 @@ namespace AdvancedPrediction.Prediction
          * @return an array containing the two real roots, or <code>null</code> if
          *         no real solutions exist
          */
-        public static double[] SolveQuadratic(double a, double b, double c)
+        public static float[] SolveQuadratic(float a, float b, float c)
         {
-            var disc = (b * b) - (4 * a * c);
-            if (disc < 0)
+            var disc = (b * b) - (4f * a * c);
+            if (disc < 0f)
                 return null;
 
-            disc = Math.Sqrt(disc);
-            var q = (b < 0) ? -0.5 * (b - disc) : -0.5 * (b + disc);
+            disc = Mathf.Sqrt(disc);
+            var q = (b < 0f) ? -0.5f * (b - disc) : -0.5f * (b + disc);
             var t0 = q / a;
             var t1 = c / q;
 
-            // return sorted array
-            return (t0 > t1) ? [t1, t0] : [t0, t1];
+            return [t0, t1];
         }
 
         /*
          * Solve a quartic equation of the form ax^4+bx^3+cx^2+cx^1+d=0. The roots
-         * are returned in a sorted array of doubles in increasing order.
+         * are returned in a sorted array of floats in increasing order.
          * 
          * @param a coefficient of x^4
          * @param b coefficient of x^3
@@ -226,9 +229,9 @@ namespace AdvancedPrediction.Prediction
          * @return a sorted array of roots, or <code>null</code> if no solutions
          *         exist
          */
-        public static double[] SolveQuartic(double a, double b, double c, double d, double e)
+        public static float[] SolveQuartic(float a, float b, float c, float d, float e)
         {
-            var inverseA = 1 / a;
+            var inverseA = 1f / a;
             var c1 = b * inverseA;
             var c2 = c * inverseA;
             var c3 = d * inverseA;
@@ -236,68 +239,62 @@ namespace AdvancedPrediction.Prediction
 
             // cubic resolvant
             var c12 = c1 * c1;
-            var p = (-0.375 * c12) + c2;
-            var q = (0.125 * c12 * c1) - (0.5 * c1 * c2) + c3;
-            var r = (-0.01171875 * c12 * c12) + (0.0625 * c12 * c2) - (0.25 * c1 * c3) + c4;
-            var z = SolveCubicForQuartic(-0.5 * p, -r, (0.5 * r * p) - (0.125 * q * q));
-            var d1 = (2.0 * z) - p;
-            if (d1 < 0)
+            var p = (-0.375f * c12) + c2;
+            var q = (0.125f * c12 * c1) - (0.5f * c1 * c2) + c3;
+            var r = (-0.01171875f * c12 * c12) + (0.0625f * c12 * c2) - (0.25f * c1 * c3) + c4;
+            var z = SolveCubicForQuartic(-0.5f * p, -r, (0.5f * r * p) - (0.125f * q * q));
+            var d1 = (2.0f * z) - p;
+            if (d1 < 0f)
             {
-                if (d1 > 1.0e-10)
-                    d1 = 0;
+                if (d1 > 1.0e-10f)
+                    d1 = 0f;
                 else
                     return null;
             }
-            double d2;
-            if (d1 < 1.0e-10)
+            float d2;
+            if (d1 < 1.0e-10f)
             {
                 d2 = (z * z) - r;
-                if (d2 < 0)
+                if (d2 < 0f)
                     return null;
-                d2 = Math.Sqrt(d2);
+                d2 = Mathf.Sqrt(d2);
             }
             else
             {
-                d1 = Math.Sqrt(d1);
-                d2 = 0.5 * q / d1;
+                d1 = Mathf.Sqrt(d1);
+                d2 = 0.5f * q / d1;
             }
-            // setup usefull values for the quadratic factors
+
+            // setup useful values for the quadratic factors
             var q1 = d1 * d1;
-            var q2 = -0.25 * c1;
-            var pm = q1 - (4 * (z - d2));
-            var pp = q1 - (4 * (z + d2));
-            if (pm >= 0 && pp >= 0)
+            var q2 = -0.25f * c1;
+            var pm = q1 - (4f * (z - d2));
+            var pp = q1 - (4f * (z + d2));
+            if (pm >= 0f && pp >= 0f)
             {
                 // 4 roots (!)
-                pm = Math.Sqrt(pm);
-                pp = Math.Sqrt(pp);
-                double[] results =
+                pm = Mathf.Sqrt(pm);
+                pp = Mathf.Sqrt(pp);
+                float[] results =
                 [
-                    (-0.5 * (d1 + pm)) + q2,
-                    (-0.5 * (d1 - pm)) + q2,
-                    (0.5 * (d1 + pp)) + q2,
-                    (0.5 * (d1 - pp)) + q2,
+                    (-0.5f * (d1 + pm)) + q2,
+                    (-0.5f * (d1 - pm)) + q2,
+                    (0.5f * (d1 + pp)) + q2,
+                    (0.5f * (d1 - pp)) + q2,
                 ];
-                // tiny insertion sort
-                for (var i = 1; i < 4; i++)
-                {
-                    for (var j = i; j > 0 && results[j - 1] > results[j]; j--)
-                    {
-                        (results[j - 1], results[j]) = (results[j], results[j - 1]);
-                    }
-                }
+
                 return results;
             }
             else if (pm >= 0)
             {
-                pm = Math.Sqrt(pm);
-                double[] results = [(-0.5 * (d1 + pm)) + q2, (-0.5 * (d1 - pm)) + q2];
+                pm = Mathf.Sqrt(pm);
+                float[] results = [(-0.5f * (d1 + pm)) + q2, (-0.5f * (d1 - pm)) + q2];
                 return results;
             }
             else if (pp >= 0)
             {
-                pp = Math.Sqrt(pp);
-                double[] results = [(0.5 * (d1 - pp)) + q2, (0.5 * (d1 + pp)) + q2];
+                pp = Mathf.Sqrt(pp);
+                float[] results = [(0.5f * (d1 - pp)) + q2, (0.5f * (d1 + pp)) + q2];
                 return results;
             }
             return null;
@@ -313,27 +310,27 @@ namespace AdvancedPrediction.Prediction
          * @param r
          * @return
          */
-        private static double SolveCubicForQuartic(double p, double q, double r)
+        private static float SolveCubicForQuartic(float p, float q, float r)
         {
             var A2 = p * p;
-            var Q = (A2 - (3.0 * q)) / 9.0;
-            var R = ((p * (A2 - (4.5 * q))) + (13.5 * r)) / 27.0;
+            var Q = (A2 - (3f * q)) / 9f;
+            var R = ((p * (A2 - (4.5f * q))) + (13.5f * r)) / 27f;
             var Q3 = Q * Q * Q;
             var R2 = R * R;
             var d = Q3 - R2;
-            var an = p / 3.0;
+            var an = p / 3f;
 
-            if (d >= 0)
+            if (d >= 0f)
             {
-                d = R / Math.Sqrt(Q3);
-                var theta = Math.Acos(d) / 3.0;
-                var sQ = -2.0 * Math.Sqrt(Q);
-                return (sQ * Math.Cos(theta)) - an;
+                d = R / Mathf.Sqrt(Q3);
+                var theta = Mathf.Acos(d) / 3f;
+                var sQ = -2f * Mathf.Sqrt(Q);
+                return (sQ * Mathf.Cos(theta)) - an;
             }
             else
             {
-                var sQ = Math.Pow(Math.Sqrt(R2 - Q3) + Math.Abs(R), 1.0 / 3.0);
-                return R < 0
+                var sQ = Mathf.Pow(Mathf.Sqrt(R2 - Q3) + Mathf.Abs(R), 1f / 3f);
+                return R < 0f
                     ? sQ + (Q / sQ) - an
                     : -(sQ + (Q / sQ)) - an;
             }

@@ -97,9 +97,9 @@ namespace AdvancedPrediction.Prediction
             int rayLoc = -1, transformLoc = -1;
 
             if (c.TryGotoNext(x => x.MatchCall<BaseState>(nameof(BaseState.GetAimRay))) &&
-                c.TryGotoNext(x => x.MatchStloc(out rayLoc)) && rayLoc != -1 &&
+                c.TryGotoNext(x => x.MatchStloc(out rayLoc)) &&
                 c.TryGotoNext(x => x.MatchCall<ChargeTrioBomb>(nameof(ChargeTrioBomb.FindTargetChildTransformFromBombIndex))) &&
-                c.TryGotoNext(x => x.MatchStloc(out transformLoc)) && transformLoc != -1 &&
+                c.TryGotoNext(x => x.MatchStloc(out transformLoc)) &&
                 c.TryGotoNext(x => x.MatchCall(AccessTools.PropertyGetter(typeof(ProjectileManager), nameof(ProjectileManager.instance)))))
             {
                 //aimray
